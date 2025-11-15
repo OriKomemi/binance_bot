@@ -18,8 +18,13 @@ class Settings(BaseSettings):
 
     # Binance API
     binance_api_key: str = Field(..., description="Binance API key")
-    binance_api_secret: str = Field(..., description="Binance API secret")
+    binance_api_secret: str = Field(default="", description="Binance API secret (for HMAC)")
     binance_testnet: bool = Field(default=True, description="Use Binance testnet")
+
+    # Ed25519 Authentication (more secure alternative to HMAC)
+    use_ed25519: bool = Field(default=False, description="Use Ed25519 authentication instead of HMAC")
+    ed25519_private_key_path: str = Field(default="", description="Path to Ed25519 private key PEM file")
+    ed25519_key_password: str = Field(default="", description="Password for encrypted Ed25519 key")
 
     # Trading Configuration
     trading_pairs: str = Field(default="BTCUSDT,ETHUSDT", description="Comma-separated trading pairs")

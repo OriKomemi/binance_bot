@@ -40,7 +40,7 @@ env/
 # Data and logs
 *.log
 logs/
-data/
+/data/
 *.parquet
 *.db
 *.sqlite

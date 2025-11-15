@@ -1,10 +1,11 @@
 """Telegram bot for notifications and alerts."""
 
 import logging
+import asyncio
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
 from telegram import Bot
 from telegram.error import TelegramError
-import asyncio
 
 from ..config import get_settings
 
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramNotifier:
-    """Telegram notification manager."""
+    """Telegram notification manager with async support."""
 
     def __init__(self, bot_token: Optional[str] = None, chat_id: Optional[str] = None):
         """Initialize Telegram notifier.
@@ -31,10 +32,31 @@ class TelegramNotifier:
             self.bot = None
         else:
             self.bot = Bot(token=self.bot_token)
+            self._loop = None
+            self._executor = ThreadPoolExecutor(max_workers=1)
             logger.info("Telegram notifier initialized")
 
+    def _get_or_create_loop(self) -> asyncio.AbstractEventLoop:
+        """Get or create event loop for async operations.
+
+        Returns:
+            Event loop
+        """
+        try:
+            # Try to get the current event loop
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If loop is running, we need to submit to it differently
+                return loop
+            return loop
+        except RuntimeError:
+            # No event loop in current thread, create one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            return loop
+
     def send_message(self, message: str, parse_mode: str = "Markdown") -> bool:
-        """Send a message via Telegram.
+        """Send a message via Telegram (sync interface).
 
         Args:
             message: Message text
@@ -48,25 +70,58 @@ class TelegramNotifier:
             return False
 
         try:
-            # Run async send in sync context
-            asyncio.run(self._send_async(message, parse_mode))
+            # Try to detect if we're already in an async context
+            try:
+                loop = asyncio.get_running_loop()
+                # We're in a running loop, schedule the coroutine
+                future = asyncio.run_coroutine_threadsafe(
+                    self.send_message_async(message, parse_mode),
+                    loop
+                )
+                future.result(timeout=10)
+            except RuntimeError:
+                # No running loop, use run_until_complete
+                loop = self._get_or_create_loop()
+                loop.run_until_complete(
+                    self.send_message_async(message, parse_mode)
+                )
+
             return True
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
             return False
 
-    async def _send_async(self, message: str, parse_mode: str):
-        """Send message asynchronously.
+    async def send_message_async(self, message: str, parse_mode: str = "Markdown") -> bool:
+        """Send a message via Telegram (async interface).
 
         Args:
             message: Message text
-            parse_mode: Parse mode
+            parse_mode: Parse mode (Markdown or HTML)
+
+        Returns:
+            True if successful
         """
-        await self.bot.send_message(
-            chat_id=self.chat_id,
-            text=message,
-            parse_mode=parse_mode
-        )
+        if not self.enabled or not self.bot:
+            logger.debug(f"Telegram disabled, would send: {message}")
+            return False
+
+        try:
+            async with self.bot:
+                await self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=message,
+                    parse_mode=parse_mode,
+                    read_timeout=10,
+                    write_timeout=10,
+                    connect_timeout=10
+                )
+            return True
+        except TelegramError as e:
+            logger.error(f"Telegram API error: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to send Telegram message: {e}")
+            return False
 
     def alert_trade_executed(
         self,

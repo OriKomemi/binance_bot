@@ -3,7 +3,7 @@
 import logging
 from decimal import Decimal
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Dict, Optional
 import pandas as pd
 
 from .base_strategy import BaseStrategy, Signal, SignalType

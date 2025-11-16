@@ -1,11 +1,13 @@
 """Main bot application."""
 
+import asyncio
 import logging
 import signal
 import sys
 import time
 from datetime import datetime, timedelta
 from typing import Optional
+from threading import Thread
 
 from .config import get_settings
 from .utils import setup_logging
@@ -15,7 +17,7 @@ from .persistence import Database
 from .risk import RiskManager
 from .execution import OrderExecutor
 from .strategies import GridStrategy, DCAStrategy, TrendFollowingStrategy, SignalType
-from .monitoring import TelegramNotifier, MetricsCollector
+from .monitoring import TelegramNotifier, TelegramCommandBot, MetricsCollector
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,14 @@ class TradingBot:
         self.telegram = TelegramNotifier()
         self.metrics = MetricsCollector()
 
+        # Initialize Telegram command bot
+        self.telegram_commands = TelegramCommandBot(
+            database=self.db,
+            executor=self.executor,
+            risk_manager=self.risk_manager,
+            data_client=self.data_client
+        )
+
         # Initialize strategies
         self.strategies = {}
         self._initialize_strategies()
@@ -50,6 +60,8 @@ class TradingBot:
         # State
         self.running = False
         self.last_health_check = datetime.now()
+        self.telegram_thread = None
+        self.telegram_loop = None
 
         logger.info("Bot initialization complete")
 
@@ -120,6 +132,11 @@ class TradingBot:
         # Start monitoring
         self.metrics.start_server()
 
+        # Start Telegram command bot in separate thread
+        if self.telegram_commands.enabled:
+            logger.info("Starting Telegram command bot...")
+            self._start_telegram_commands()
+
         # Subscribe to market data
         self._subscribe_market_data()
 
@@ -158,6 +175,17 @@ class TradingBot:
 
         # Stop WebSocket
         self.ws_manager.stop()
+
+        # Stop Telegram command bot
+        if self.telegram_commands.enabled and self.telegram_loop:
+            logger.info("Stopping Telegram command bot...")
+            asyncio.run_coroutine_threadsafe(
+                self.telegram_commands.stop(),
+                self.telegram_loop
+            ).result(timeout=10)
+
+            if self.telegram_thread:
+                self.telegram_thread.join(timeout=5)
 
         # Send shutdown notification
         self.telegram.alert_system_status("stopped", "Bot shutdown gracefully")
@@ -387,6 +415,28 @@ class TradingBot:
 
         except Exception as e:
             logger.error(f"Error updating metrics: {e}")
+
+    def _start_telegram_commands(self):
+        """Start Telegram command bot in a separate thread."""
+        def run_telegram_bot():
+            """Run the Telegram bot in its own event loop."""
+            self.telegram_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.telegram_loop)
+
+            try:
+                self.telegram_loop.run_until_complete(
+                    self.telegram_commands.start()
+                )
+                # Keep the loop running
+                self.telegram_loop.run_forever()
+            except Exception as e:
+                logger.error(f"Telegram command bot error: {e}")
+            finally:
+                self.telegram_loop.close()
+
+        self.telegram_thread = Thread(target=run_telegram_bot, daemon=True)
+        self.telegram_thread.start()
+        logger.info("Telegram command bot thread started")
 
     def _signal_handler(self, signum, frame):
         """Handle system signals.

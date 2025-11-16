@@ -171,6 +171,8 @@ class TelegramCommandBot:
 
         except Exception as e:
             logger.error(f"Error in /status command: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             await update.message.reply_text(f"❌ Error: {str(e)}")
 
     async def cmd_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -190,24 +192,30 @@ class TelegramCommandBot:
             msg_lines = ["📊 *Open Positions:*\n"]
 
             for pos in positions:
-                if pos.quantity and pos.current_price and pos.entry_price:
-                    pnl = (pos.current_price - pos.entry_price) * pos.quantity
-                    pnl_pct = (pos.current_price - pos.entry_price) / pos.entry_price * 100
-                    pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+                try:
+                    if pos.quantity and pos.current_price and pos.entry_price:
+                        pnl = (pos.current_price - pos.entry_price) * pos.quantity
+                        pnl_pct = (pos.current_price - pos.entry_price) / pos.entry_price * 100
+                        pnl_emoji = "🟢" if pnl >= 0 else "🔴"
 
-                    msg_lines.append(
-                        f"\n*{pos.symbol}*\n"
-                        f"  Qty: {pos.quantity}\n"
-                        f"  Entry: ${pos.entry_price:,.2f}\n"
-                        f"  Current: ${pos.current_price:,.2f}\n"
-                        f"  {pnl_emoji} PnL: ${pnl:,.2f} ({pnl_pct:+.2f}%)"
-                    )
+                        msg_lines.append(
+                            f"\n*{pos.symbol}*\n"
+                            f"  Qty: {pos.quantity}\n"
+                            f"  Entry: ${pos.entry_price:,.2f}\n"
+                            f"  Current: ${pos.current_price:,.2f}\n"
+                            f"  {pnl_emoji} PnL: ${pnl:,.2f} ({pnl_pct:+.2f}%)"
+                        )
+                except Exception as e:
+                    logger.error(f"Error processing position {pos.symbol if hasattr(pos, 'symbol') else 'unknown'}: {e}")
+                    continue
 
             positions_msg = "\n".join(msg_lines)
             await update.message.reply_text(positions_msg, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in /positions command: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             await update.message.reply_text(f"❌ Error: {str(e)}")
 
     async def cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

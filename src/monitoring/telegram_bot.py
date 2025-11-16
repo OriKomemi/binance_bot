@@ -70,25 +70,56 @@ class TelegramNotifier:
             return False
 
         try:
-            # Try to detect if we're already in an async context
+            # Check if we're in an async context (running loop in current thread)
             try:
-                loop = asyncio.get_running_loop()
-                # We're in a running loop, schedule the coroutine
-                future = asyncio.run_coroutine_threadsafe(
-                    self.send_message_async(message, parse_mode),
-                    loop
-                )
-                future.result(timeout=10)
-            except RuntimeError:
-                # No running loop, use run_until_complete
-                loop = self._get_or_create_loop()
-                loop.run_until_complete(
-                    self.send_message_async(message, parse_mode)
-                )
+                asyncio.get_running_loop()
+                # We're in a running loop - can't use run_until_complete
+                # Use asyncio.run in a thread instead
+                import threading
+                result = [False]
+                exception = [None]
 
-            return True
+                def run_in_thread():
+                    try:
+                        # Create a new event loop for this thread
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        try:
+                            new_loop.run_until_complete(
+                                self.send_message_async(message, parse_mode)
+                            )
+                            result[0] = True
+                        finally:
+                            new_loop.close()
+                    except Exception as e:
+                        exception[0] = e
+
+                thread = threading.Thread(target=run_in_thread)
+                thread.start()
+                thread.join(timeout=10)
+
+                if exception[0]:
+                    raise exception[0]
+
+                return result[0]
+
+            except RuntimeError:
+                # No running loop in current thread - we can use run_until_complete
+                # Create a fresh loop to avoid conflicts
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(
+                        self.send_message_async(message, parse_mode)
+                    )
+                    return True
+                finally:
+                    loop.close()
+
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
 
     async def send_message_async(self, message: str, parse_mode: str = "Markdown") -> bool:

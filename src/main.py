@@ -86,6 +86,37 @@ class TradingBot:
             logger.error("Health checks failed, aborting start")
             return False
 
+        # Sync positions from exchange
+        logger.info("Syncing positions from Binance exchange...")
+        sync_results = self.executor.sync_positions_from_exchange(
+            trading_pairs=self.settings.trading_pairs_list
+        )
+
+        # Log sync summary
+        if 'error' in sync_results:
+            logger.error(f"Position sync failed: {sync_results['error']}")
+            self.telegram.alert_error(
+                "Position Sync Failed",
+                sync_results['error']
+            )
+        else:
+            logger.info(
+                f"Position sync complete: "
+                f"{sync_results['synced_count']} synced, "
+                f"{sync_results['created_count']} created, "
+                f"{sync_results['updated_count']} updated, "
+                f"{sync_results['closed_count']} closed"
+            )
+
+            # Send Telegram notification if there were discrepancies
+            if sync_results['discrepancies']:
+                self.telegram.send_message(
+                    f"⚠️ Position Sync Discrepancies Found:\n\n"
+                    f"Found {len(sync_results['discrepancies'])} discrepancies between "
+                    f"database and exchange positions.\n\n"
+                    f"Details logged. Please review."
+                )
+
         # Start monitoring
         self.metrics.start_server()
 

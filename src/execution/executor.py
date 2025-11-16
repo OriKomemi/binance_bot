@@ -371,3 +371,201 @@ class OrderExecutor:
         except Exception as e:
             logger.error(f"Failed to cancel all orders: {e}")
             return 0
+
+    def sync_positions_from_exchange(self, trading_pairs: list) -> Dict[str, any]:
+        """Sync positions from Binance exchange to local database.
+
+        This is crucial for startup to ensure the bot is aware of existing positions
+        that may have been opened manually or in a previous session.
+
+        Args:
+            trading_pairs: List of trading pairs to check (e.g., ['BTCUSDT', 'ETHUSDT'])
+
+        Returns:
+            Dictionary with sync results and statistics
+        """
+        logger.info("Syncing positions from Binance exchange...")
+
+        sync_results = {
+            'synced_count': 0,
+            'created_count': 0,
+            'updated_count': 0,
+            'closed_count': 0,
+            'discrepancies': [],
+            'balances': {}
+        }
+
+        try:
+            # Get account information from Binance
+            account_info = self.client.get_account()
+
+            # Extract balances
+            balances = {
+                balance['asset']: {
+                    'free': Decimal(str(balance['free'])),
+                    'locked': Decimal(str(balance['locked'])),
+                    'total': Decimal(str(balance['free'])) + Decimal(str(balance['locked']))
+                }
+                for balance in account_info['balances']
+                if Decimal(str(balance['free'])) > 0 or Decimal(str(balance['locked'])) > 0
+            }
+
+            sync_results['balances'] = balances
+
+            # Check each trading pair
+            for symbol in trading_pairs:
+                # Extract base asset (e.g., 'BTC' from 'BTCUSDT')
+                # Assumes quote currency is USDT, BTC, ETH, or BNB
+                base_asset = None
+                for quote in ['USDT', 'BUSD', 'BTC', 'ETH', 'BNB']:
+                    if symbol.endswith(quote):
+                        base_asset = symbol[:-len(quote)]
+                        quote_asset = quote
+                        break
+
+                if not base_asset:
+                    logger.warning(f"Could not determine base asset for {symbol}")
+                    continue
+
+                # Get balance for this asset
+                exchange_balance = balances.get(base_asset, {}).get('total', Decimal('0'))
+
+                # Get current database position
+                db_position = self.db.get_position(symbol)
+
+                # Get current price for this symbol
+                current_price = self._get_current_price(symbol)
+                if not current_price:
+                    logger.warning(f"Could not get current price for {symbol}, skipping sync")
+                    continue
+
+                # Sync logic
+                if exchange_balance > Decimal('0.00000001'):  # Has balance on exchange
+                    if db_position and db_position.is_open:
+                        # Position exists in DB - check if quantities match
+                        db_quantity = db_position.quantity or Decimal('0')
+
+                        if abs(db_quantity - exchange_balance) > Decimal('0.00000001'):
+                            # Discrepancy found
+                            discrepancy = {
+                                'symbol': symbol,
+                                'db_quantity': float(db_quantity),
+                                'exchange_quantity': float(exchange_balance),
+                                'difference': float(exchange_balance - db_quantity)
+                            }
+                            sync_results['discrepancies'].append(discrepancy)
+
+                            logger.warning(
+                                f"Position mismatch for {symbol}: "
+                                f"DB={db_quantity}, Exchange={exchange_balance}"
+                            )
+
+                            # Update database with exchange quantity
+                            self.db.upsert_position(symbol, {
+                                'quantity': exchange_balance,
+                                'current_price': current_price,
+                                'updated_at': datetime.utcnow()
+                            })
+                            sync_results['updated_count'] += 1
+                        else:
+                            # Quantities match, just update price
+                            self.db.upsert_position(symbol, {
+                                'current_price': current_price,
+                                'updated_at': datetime.utcnow()
+                            })
+
+                    elif db_position and not db_position.is_open:
+                        # Position exists but marked as closed - reopen it
+                        logger.info(
+                            f"Reopening closed position for {symbol} "
+                            f"(found {exchange_balance} on exchange)"
+                        )
+                        self.db.upsert_position(symbol, {
+                            'quantity': exchange_balance,
+                            'current_price': current_price,
+                            'is_open': True,
+                            'updated_at': datetime.utcnow()
+                        })
+                        sync_results['updated_count'] += 1
+
+                    else:
+                        # No position in DB but has balance on exchange - create new position
+                        logger.info(
+                            f"Creating new position for {symbol} "
+                            f"(found {exchange_balance} on exchange)"
+                        )
+
+                        # We don't know the exact entry price, so use current price as estimate
+                        # This will affect PnL accuracy for pre-existing positions
+                        position_data = {
+                            'quantity': exchange_balance,
+                            'entry_price': current_price,  # Estimated
+                            'current_price': current_price,
+                            'is_open': True,
+                            'opened_at': datetime.utcnow(),
+                            'notes': 'Position synced from exchange - entry price estimated'
+                        }
+                        self.db.upsert_position(symbol, position_data)
+                        sync_results['created_count'] += 1
+
+                        sync_results['discrepancies'].append({
+                            'symbol': symbol,
+                            'db_quantity': 0,
+                            'exchange_quantity': float(exchange_balance),
+                            'difference': float(exchange_balance),
+                            'note': 'Position created from exchange balance'
+                        })
+
+                    sync_results['synced_count'] += 1
+
+                else:
+                    # No balance on exchange
+                    if db_position and db_position.is_open:
+                        # DB says open but exchange has no balance - close it
+                        logger.warning(
+                            f"Closing position for {symbol} "
+                            f"(DB shows {db_position.quantity} but exchange has 0)"
+                        )
+                        self.db.upsert_position(symbol, {
+                            'is_open': False,
+                            'closed_at': datetime.utcnow(),
+                            'current_price': current_price,
+                            'notes': 'Closed during sync - no balance on exchange'
+                        })
+                        sync_results['closed_count'] += 1
+                        sync_results['discrepancies'].append({
+                            'symbol': symbol,
+                            'db_quantity': float(db_position.quantity or 0),
+                            'exchange_quantity': 0,
+                            'difference': float(-(db_position.quantity or 0)),
+                            'note': 'Position closed - no balance on exchange'
+                        })
+
+            # Log summary
+            logger.info(
+                f"Position sync complete: "
+                f"synced={sync_results['synced_count']}, "
+                f"created={sync_results['created_count']}, "
+                f"updated={sync_results['updated_count']}, "
+                f"closed={sync_results['closed_count']}, "
+                f"discrepancies={len(sync_results['discrepancies'])}"
+            )
+
+            if sync_results['discrepancies']:
+                logger.warning(f"Found {len(sync_results['discrepancies'])} discrepancies:")
+                for disc in sync_results['discrepancies']:
+                    logger.warning(f"  {disc}")
+
+            return sync_results
+
+        except BinanceAPIException as e:
+            error_msg = f"Failed to sync positions from Binance: {e.message}"
+            logger.error(error_msg)
+            sync_results['error'] = error_msg
+            return sync_results
+
+        except Exception as e:
+            error_msg = f"Failed to sync positions: {str(e)}"
+            logger.error(error_msg)
+            sync_results['error'] = error_msg
+            return sync_results

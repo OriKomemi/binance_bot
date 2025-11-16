@@ -4,7 +4,7 @@ import logging
 import time
 from datetime import datetime
 from decimal import Decimal
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 from binance.client import Client
 from binance.exceptions import BinanceAPIException, BinanceOrderException
 from tenacity import (
@@ -76,21 +76,55 @@ class OrderExecutor:
         self.api_key = api_key or settings.binance_api_key
         self.api_secret = api_secret or settings.binance_api_secret
         self.testnet = settings.binance_testnet
+        self.use_ed25519 = settings.use_ed25519
 
-        # Initialize Binance client
-        self.client = Client(
-            api_key=self.api_key,
-            api_secret=self.api_secret,
-            testnet=self.testnet
-        )
+        # Initialize appropriate Binance client
+        if self.use_ed25519:
+            # Use Ed25519 authentication
+            try:
+                from ..data import BinanceEd25519Client
+                logger.info("Initializing Ed25519 client...")
+                self.client = BinanceEd25519Client(
+                    api_key=self.api_key,
+                    private_key_path=settings.ed25519_private_key_path,
+                    password=settings.ed25519_key_password if settings.ed25519_key_password else None,
+                    testnet=self.testnet
+                )
+                logger.info(f"Order executor initialized with Ed25519 (testnet={self.testnet})")
+            except ImportError:
+                logger.error("Ed25519 client not available, falling back to HMAC")
+                self.client = Client(
+                    api_key=self.api_key,
+                    api_secret=self.api_secret,
+                    testnet=self.testnet
+                )
+                logger.info(f"Order executor initialized with HMAC (testnet={self.testnet})")
+            except Exception as e:
+                logger.error(f"Failed to initialize Ed25519 client: {e}")
+                logger.info("Attempting HMAC fallback...")
+                self.client = Client(
+                    api_key=self.api_key,
+                    api_secret=self.api_secret,
+                    testnet=self.testnet
+                )
+                logger.info(f"Order executor initialized with HMAC (testnet={self.testnet})")
+        else:
+            # Use HMAC authentication
+            if not self.api_secret:
+                logger.warning("No API secret provided for HMAC authentication")
+
+            self.client = Client(
+                api_key=self.api_key,
+                api_secret=self.api_secret,
+                testnet=self.testnet
+            )
+            logger.info(f"Order executor initialized with HMAC (testnet={self.testnet})")
 
         self.risk_manager = risk_manager or RiskManager()
         self.db = database or Database()
 
         # Rate limiter: 10 orders per second
         self.rate_limiter = RateLimiter(max_requests=10, time_window=1)
-
-        logger.info(f"Order executor initialized (testnet={self.testnet})")
 
     def place_order(
         self,

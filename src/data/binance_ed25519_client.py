@@ -138,6 +138,29 @@ class BinanceEd25519Client:
         params = {'symbol': symbol}
         return self._request('GET', '/api/v3/ticker/price', params=params)
 
+    def get_symbol_ticker(self, symbol: str) -> Dict:
+        """Get symbol ticker (alias for get_ticker_price for compatibility).
+
+        Args:
+            symbol: Trading pair symbol
+
+        Returns:
+            Ticker price information
+        """
+        return self.get_ticker_price(symbol)
+
+    def get_ticker(self, symbol: str) -> Dict:
+        """Get 24hr ticker price change statistics.
+
+        Args:
+            symbol: Trading pair symbol
+
+        Returns:
+            24hr ticker statistics
+        """
+        params = {'symbol': symbol}
+        return self._request('GET', '/api/v3/ticker/24hr', params=params)
+
     def create_order(
         self,
         symbol: str,

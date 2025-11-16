@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional, Dict
-from sqlalchemy import create_engine, func
+from sqlalchemy import create_engine, func, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -371,7 +371,7 @@ class Database:
         """
         try:
             with self.get_session() as session:
-                session.execute("SELECT 1")
+                session.execute(text("SELECT 1"))
             return True
         except Exception as e:
             logger.error(f"Database health check failed: {e}")
